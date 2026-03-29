@@ -1,4 +1,4 @@
-name: Build and Push Docker Image
+name: Build and Deploy Docker Image over SSH
 
 on:
   push:
@@ -7,12 +7,12 @@ on:
   workflow_dispatch:
 
 env:
-  REGISTRY: docker.io
-  IMAGE_NAME: bingzi233/check-cx
+  IMAGE_NAME: check-cx:latest
 
 jobs:
-  build-and-push:
-    runs-on: ubuntu-latest
+  build-image:
+    runs-on: self-hosted
+    timeout-minutes: 30
     permissions:
       contents: read
 
@@ -20,30 +20,78 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+      - name: Build local Docker image
+        run: docker build -t "${{ env.IMAGE_NAME }}" .
 
-      - name: Log in to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Save image to archive
+        run: docker save "${{ env.IMAGE_NAME }}" -o check-cx-image.tar
 
-      - name: Extract metadata (tags, labels)
-        id: meta
-        uses: docker/metadata-action@v5
+      - name: Upload image artifact
+        uses: actions/upload-artifact@v4
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          tags: |
-            type=semver,pattern={{version}}
+          name: check-cx-image-tar
+          path: check-cx-image.tar
+          if-no-files-found: error
+          retention-days: 1
 
-      - name: Build and push Docker image
-        uses: docker/build-push-action@v6
+  deploy:
+    runs-on: self-hosted
+    needs: build-image
+    timeout-minutes: 30
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download image artifact
+        uses: actions/download-artifact@v4
         with:
-          context: .
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-          platforms: linux/amd64
+          name: check-cx-image-tar
+          path: .
+
+      - name: Create .env for deployment
+        run: |
+          cat > .env << 'EOF'
+          ${{ secrets.DEPLOY_ENV }}
+          EOF
+
+      - name: Copy deployment files to host
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.SSH_PORT || 22 }}
+          source: "docker-compose.yml,.env,check-cx-image.tar"
+          target: ${{ secrets.SSH_TARGET_DIR }}
+
+      - name: Deploy on remote host
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.SSH_PORT || 22 }}
+          script: |
+            set -e
+            cd "${{ secrets.SSH_TARGET_DIR }}"
+            docker load -i check-cx-image.tar
+            docker compose up -d --force-recreate --remove-orphans
+            rm -f check-cx-image.tar
+            echo "Waiting for service health..."
+            for i in $(seq 1 30); do
+              if curl -fsS "http://localhost:3000/api/v1/status" > /dev/null; then
+                echo "Health check passed"
+                break
+              fi
+              if [ "$i" -eq 30 ]; then
+                echo "Health check failed after 60s"
+                docker compose ps
+                docker compose logs --tail 100
+                exit 1
+              fi
+              sleep 2
+            done
+            docker image prune -f

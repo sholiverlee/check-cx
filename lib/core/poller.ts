@@ -13,11 +13,13 @@ import {ensurePollerLeadership, isPollerLeader} from "./poller-leadership";
 import type {CheckResult, HealthStatus} from "../types";
 
 const POLL_INTERVAL_MS = getPollingIntervalMs();
+const STANDBY_LOG_INTERVAL_MS = 5 * 60 * 1000;
 const FAILURE_STATUSES: ReadonlySet<HealthStatus> = new Set([
   "failed",
   "validation_failed",
   "error",
 ]);
+let lastStandbyLogAt = 0;
 
 function isFailureResult(result: CheckResult): boolean {
   return FAILURE_STATUSES.has(result.status);
@@ -88,6 +90,7 @@ function logFailedResultsByGroup(results: CheckResult[]): void {
  * 执行一次轮询检查
  */
 async function tick() {
+  const tickStartedAt = Date.now();
   try {
     await ensurePollerLeadership();
   } catch (error) {
@@ -95,6 +98,11 @@ async function tick() {
     return;
   }
   if (!isPollerLeader()) {
+    const now = Date.now();
+    if (now - lastStandbyLogAt >= STANDBY_LOG_INTERVAL_MS) {
+      console.log("[check-cx] 跳过本轮轮询：当前节点为 standby（非 leader）");
+      lastStandbyLogAt = now;
+    }
     return;
   }
   // 原子操作：检查并设置运行状态
@@ -111,18 +119,25 @@ async function tick() {
   globalThis.__checkCxPollerRunning = true;
 
   setLastPingStartedAt(Date.now());
+  console.log(`[check-cx] 开始执行轮询检测 (${new Date(tickStartedAt).toISOString()})`);
   try {
     const allConfigs = await loadProviderConfigsFromDB();
     // 过滤掉维护中的配置
     const configs = allConfigs.filter((cfg) => !cfg.is_maintenance);
 
     if (configs.length === 0) {
+      const duration = Date.now() - tickStartedAt;
+      console.log(`[check-cx] 本轮轮询结束：未找到可检测配置（耗时 ${duration}ms）`);
       return;
     }
 
     const results = await runProviderChecks(configs);
     await historySnapshotStore.append(results);
     logFailedResultsByGroup(results);
+    const duration = Date.now() - tickStartedAt;
+    console.log(
+      `[check-cx] 本轮轮询结束：检测 ${configs.length} 个配置，写入 ${results.length} 条结果（耗时 ${duration}ms）`
+    );
   } catch (error) {
     console.error("[check-cx] 轮询检测失败", error);
   } finally {

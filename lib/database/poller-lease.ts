@@ -12,6 +12,13 @@ const LEASE_TABLE = "check_poller_leases";
 const LEASE_KEY = "poller";
 const INITIAL_LEASE_EXPIRES_AT = new Date(0).toISOString();
 
+export interface PollerLeaseSnapshot {
+  lease_key: string;
+  leader_id: string | null;
+  lease_expires_at: string;
+  updated_at: string;
+}
+
 function isDuplicateKeyError(error: PostgrestError | null): boolean {
   return error?.code === "23505";
 }
@@ -49,6 +56,11 @@ export async function tryAcquirePollerLease(
 
   if (error) {
     logError("获取轮询租约失败", error);
+    console.error("[check-cx] 获取轮询租约失败详情", {
+      nodeId,
+      nowIso,
+      expiresAt: expiresAt.toISOString(),
+    });
     return false;
   }
 
@@ -75,8 +87,33 @@ export async function tryRenewPollerLease(
 
   if (error) {
     logError("续租轮询租约失败", error);
+    console.error("[check-cx] 续租轮询租约失败详情", {
+      nodeId,
+      nowIso,
+      expiresAt: expiresAt.toISOString(),
+    });
     return false;
   }
 
   return Array.isArray(data) && data.length > 0;
+}
+
+export async function getPollerLeaseSnapshot(): Promise<PollerLeaseSnapshot | null> {
+  const supabase = createAdminClient();
+  const { data, error } = await supabase
+    .from(LEASE_TABLE)
+    .select("lease_key, leader_id, lease_expires_at, updated_at")
+    .eq("lease_key", LEASE_KEY)
+    .maybeSingle();
+
+  if (error) {
+    logError("读取轮询租约快照失败", error);
+    return null;
+  }
+
+  if (!data) {
+    return null;
+  }
+
+  return data as PollerLeaseSnapshot;
 }

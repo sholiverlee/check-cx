@@ -10,8 +10,8 @@
 import "server-only";
 import { createClient as createSupabaseClient } from "@supabase/supabase-js";
 
-// 开发模式使用 dev schema，生产模式使用 public schema
-const DB_SCHEMA = process.env.NODE_ENV === "development" ? "dev" : "public";
+// 默认使用 public，若需要可通过 SUPABASE_DB_SCHEMA 显式覆盖为 dev 等自定义 schema
+const DB_SCHEMA = process.env.SUPABASE_DB_SCHEMA || "public";
 
 /**
  * 创建管理员客户端（绕过 RLS）
