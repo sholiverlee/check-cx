@@ -320,7 +320,7 @@ SELECT prune_check_history(30);
 
 ### 7.3 官方状态显示 unknown
 
-- 当前仅 OpenAI/Anthropic 实现官方状态。
+- 当前已实现 OpenAI/Anthropic/Gemini 官方状态检查。
 - 检查外网访问是否被阻断或 DNS 被限制。
 
 ### 7.4 多节点重复写入
