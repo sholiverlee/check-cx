@@ -1,4 +1,5 @@
 import {NextResponse} from "next/server";
+import "@/lib/core/poller";
 
 import {loadDashboardDataWithEtag} from "@/lib/core/dashboard-data";
 import {getPollingIntervalMs} from "@/lib/core/polling-config";

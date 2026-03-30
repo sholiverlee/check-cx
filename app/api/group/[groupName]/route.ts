@@ -1,4 +1,5 @@
 import {NextResponse} from "next/server";
+import "@/lib/core/poller";
 import {loadGroupDashboardData} from "@/lib/core/group-data";
 import {getPollingIntervalMs} from "@/lib/core/polling-config";
 import type {AvailabilityPeriod} from "@/lib/types";

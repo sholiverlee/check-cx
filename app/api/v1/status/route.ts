@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import "@/lib/core/poller";
 import { loadHistory } from "@/lib/database/history";
 import { loadProviderConfigsFromDB } from "@/lib/database/config-loader";
 import { getPollingIntervalMs, getPollingIntervalLabel } from "@/lib/core/polling-config";
