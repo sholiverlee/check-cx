@@ -6,14 +6,16 @@
 import {historySnapshotStore} from "../database/history";
 import {loadProviderConfigsFromDB} from "../database/config-loader";
 import {runProviderChecks} from "../providers";
-import {getPollingIntervalMs} from "./polling-config";
+import {getPollingIntervalMs, getPollingJitterMs} from "./polling-config";
 import {getLastPingStartedAt, getPollerTimer, setLastPingStartedAt, setPollerTimer,} from "./global-state";
 import {startOfficialStatusPoller} from "./official-status-poller";
 import {ensurePollerLeadership, isPollerLeader} from "./poller-leadership";
 import type {CheckResult, HealthStatus} from "../types";
 
 const POLL_INTERVAL_MS = getPollingIntervalMs();
+const POLL_JITTER_MS = getPollingJitterMs();
 const STANDBY_LOG_INTERVAL_MS = 5 * 60 * 1000;
+const MIN_EFFECTIVE_POLL_INTERVAL_MS = 1_000;
 const FAILURE_STATUSES: ReadonlySet<HealthStatus> = new Set([
   "failed",
   "validation_failed",
@@ -86,6 +88,28 @@ function logFailedResultsByGroup(results: CheckResult[]): void {
   console.error("[check-cx] ====================== 批次结束 =====================");
 }
 
+function getNextPollDelayMs(): number {
+  if (POLL_JITTER_MS <= 0) {
+    return POLL_INTERVAL_MS;
+  }
+  const offsetMs = Math.floor(Math.random() * (POLL_JITTER_MS * 2 + 1)) - POLL_JITTER_MS;
+  return Math.max(MIN_EFFECTIVE_POLL_INTERVAL_MS, POLL_INTERVAL_MS + offsetMs);
+}
+
+function scheduleNextTick(): void {
+  const delayMs = getNextPollDelayMs();
+  const nextAt = new Date(Date.now() + delayMs).toISOString();
+  const timer = setTimeout(() => {
+    tick()
+      .catch((error) => console.error("[check-cx] 定时检测失败", error))
+      .finally(() => {
+        scheduleNextTick();
+      });
+  }, delayMs);
+  setPollerTimer(timer);
+  console.log(`[check-cx] 下一轮轮询预计 ${nextAt}（delay=${delayMs}ms）`);
+}
+
 /**
  * 执行一次轮询检查
  */
@@ -147,16 +171,21 @@ async function tick() {
 
 // 自动初始化轮询器
 if (!getPollerTimer()) {
-  const firstCheckAt = new Date(Date.now() + POLL_INTERVAL_MS).toISOString();
+  const firstDelayMs = getNextPollDelayMs();
+  const firstCheckAt = new Date(Date.now() + firstDelayMs).toISOString();
   console.log(
-    `[check-cx] 初始化后台轮询器，interval=${POLL_INTERVAL_MS}ms，首次检测预计 ${firstCheckAt}`
+    `[check-cx] 初始化后台轮询器，interval=${POLL_INTERVAL_MS}ms，jitter=±${POLL_JITTER_MS}ms，首次检测预计 ${firstCheckAt}`
   );
   ensurePollerLeadership().catch((error) => {
     console.error("[check-cx] 初始化主节点选举失败", error);
   });
-  const timer = setInterval(() => {
-    tick().catch((error) => console.error("[check-cx] 定时检测失败", error));
-  }, POLL_INTERVAL_MS);
+  const timer = setTimeout(() => {
+    tick()
+      .catch((error) => console.error("[check-cx] 定时检测失败", error))
+      .finally(() => {
+        scheduleNextTick();
+      });
+  }, firstDelayMs);
   setPollerTimer(timer);
 
   // 启动官方状态轮询器

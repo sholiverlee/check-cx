@@ -8,48 +8,66 @@ import { getErrorMessage, getSanitizedErrorDetail, logError } from "../utils";
 import { checkWithAiSdk } from "./ai-sdk-check";
 import { getCheckConcurrency } from "../core/polling-config";
 
-// 最多尝试 3 次：初始一次 + 2 次重试
-const MAX_REQUEST_ABORT_RETRIES = 2;
-const REQUEST_ABORTED_PATTERN = /request was aborted\.?/i;
+const MAX_429_RETRIES = 2;
+const BASE_429_RETRY_DELAY_MS = 1_500;
+const MAX_429_RETRY_DELAY_MS = 10_000;
+const RETRY_JITTER_MS = 500;
+const MIN_RETRY_DELAY_MS = 500;
+const RATE_LIMIT_PATTERN = /(429|too many requests|rate limit|rate-limited)/i;
 
-function shouldRetryRequestAborted(message: string | undefined): boolean {
+function isRateLimitedMessage(message: string | undefined): boolean {
   if (!message) {
     return false;
   }
-  return REQUEST_ABORTED_PATTERN.test(message);
+  return RATE_LIMIT_PATTERN.test(message);
 }
 
-async function checkWithRetry(config: ProviderConfig): Promise<CheckResult> {
-  for (let attempt = 0; attempt <= MAX_REQUEST_ABORT_RETRIES; attempt += 1) {
+function getRetryDelayMs(attempt: number): number {
+  const exponential = Math.min(
+    MAX_429_RETRY_DELAY_MS,
+    BASE_429_RETRY_DELAY_MS * 2 ** attempt
+  );
+  const jitter =
+    Math.floor(Math.random() * (RETRY_JITTER_MS * 2 + 1)) - RETRY_JITTER_MS;
+  return Math.max(MIN_RETRY_DELAY_MS, exponential + jitter);
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+async function checkProvider(config: ProviderConfig): Promise<CheckResult> {
+  for (let attempt = 0; attempt <= MAX_429_RETRIES; attempt += 1) {
     try {
       const result = await checkWithAiSdk(config);
       if (
-        result.status === "failed" &&
-        shouldRetryRequestAborted(result.message) &&
-        attempt < MAX_REQUEST_ABORT_RETRIES
+        isRateLimitedMessage(result.message) &&
+        attempt < MAX_429_RETRIES
       ) {
+        const delayMs = getRetryDelayMs(attempt);
         console.warn(
-          `[check-cx] ${config.name} 请求异常（Request was aborted），正在重试第 ${
+          `[check-cx] ${config.name} 命中限流(429)，${delayMs}ms 后重试第 ${
             attempt + 2
           } 次`
         );
+        await sleep(delayMs);
         continue;
       }
       return result;
     } catch (error) {
       const message = getErrorMessage(error);
-      if (
-        shouldRetryRequestAborted(message) &&
-        attempt < MAX_REQUEST_ABORT_RETRIES
-      ) {
+      if (isRateLimitedMessage(message) && attempt < MAX_429_RETRIES) {
+        const delayMs = getRetryDelayMs(attempt);
         console.warn(
-          `[check-cx] ${config.name} 请求异常（Request was aborted），正在重试第 ${
+          `[check-cx] ${config.name} 命中限流(429)，${delayMs}ms 后重试第 ${
             attempt + 2
           } 次`
         );
+        await sleep(delayMs);
         continue;
       }
-
       logError(`检查 ${config.name} (${config.type}) 失败`, error);
       return {
         id: config.id,
@@ -68,7 +86,6 @@ async function checkWithRetry(config: ProviderConfig): Promise<CheckResult> {
     }
   }
 
-  // 理论上不会触发，这里仅为类型系统兜底
   throw new Error("Unexpected retry loop exit");
 }
 
@@ -86,7 +103,7 @@ export async function runProviderChecks(
 
   const limit = pLimit(getCheckConcurrency());
   const results = await Promise.all(
-    configs.map((config) => limit(() => checkWithRetry(config)))
+    configs.map((config) => limit(() => checkProvider(config)))
   );
 
   return results.sort((a, b) => a.name.localeCompare(b.name));

@@ -5,7 +5,7 @@
 
 import type {OfficialStatusResult, ProviderType} from "../types";
 import {checkAllOfficialStatuses} from "../official-status";
-import {getOfficialStatusIntervalMs} from "./polling-config";
+import {getOfficialStatusIntervalMs, getOfficialStatusJitterMs} from "./polling-config";
 import {logError} from "../utils/error-handler";
 import {ensurePollerLeadership, isPollerLeader} from "./poller-leadership";
 
@@ -46,6 +46,34 @@ function isOfficialStatusPolling(): boolean {
 
 function setOfficialStatusPolling(polling: boolean): void {
   globalThis.__checkCxOfficialStatusPolling = polling;
+}
+
+const MIN_EFFECTIVE_INTERVAL_MS = 1_000;
+
+function getNextOfficialStatusDelayMs(): number {
+  const intervalMs = getOfficialStatusIntervalMs();
+  const jitterMs = getOfficialStatusJitterMs();
+  if (jitterMs <= 0) {
+    return intervalMs;
+  }
+  const offsetMs = Math.floor(Math.random() * (jitterMs * 2 + 1)) - jitterMs;
+  return Math.max(MIN_EFFECTIVE_INTERVAL_MS, intervalMs + offsetMs);
+}
+
+function scheduleNextOfficialStatusCheck(): void {
+  const delayMs = getNextOfficialStatusDelayMs();
+  const nextAt = new Date(Date.now() + delayMs).toISOString();
+  const timer = setTimeout(() => {
+    runOfficialStatusCheck()
+      .catch((error) => {
+        logError("startOfficialStatusPoller.interval", error);
+      })
+      .finally(() => {
+        scheduleNextOfficialStatusCheck();
+      });
+  }, delayMs);
+  setOfficialStatusTimer(timer);
+  console.log(`[官方状态] 下一轮预计 ${nextAt}（delay=${delayMs}ms）`);
 }
 
 /**
@@ -140,8 +168,9 @@ export function startOfficialStatusPoller(): void {
     logError("startOfficialStatusPoller.leadership", error);
   });
   const intervalMs = getOfficialStatusIntervalMs();
+  const jitterMs = getOfficialStatusJitterMs();
   console.log(
-    `[官方状态] 启动轮询器,间隔 ${intervalMs / 1000} 秒...`
+    `[官方状态] 启动轮询器,间隔 ${intervalMs / 1000} 秒,jitter=±${jitterMs / 1000} 秒...`
   );
 
   // 立即执行一次检查
@@ -150,12 +179,7 @@ export function startOfficialStatusPoller(): void {
   });
 
   // 设置定时器
-  const timer = setInterval(() => {
-    runOfficialStatusCheck().catch((error) => {
-      logError("startOfficialStatusPoller.interval", error);
-    });
-  }, intervalMs);
-  setOfficialStatusTimer(timer);
+  scheduleNextOfficialStatusCheck();
 }
 
 /**
@@ -166,7 +190,7 @@ export function stopOfficialStatusPoller(): void {
   if (!timer) {
     return;
   }
-  clearInterval(timer);
+  clearTimeout(timer);
   setOfficialStatusTimer(null);
   setOfficialStatusPolling(false);
   console.log("[官方状态] 轮询器已停止");

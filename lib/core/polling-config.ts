@@ -1,6 +1,9 @@
 const DEFAULT_INTERVAL_SECONDS = 60;
 const MIN_INTERVAL_SECONDS = 15;
 const MAX_INTERVAL_SECONDS = 600;
+const DEFAULT_JITTER_SECONDS = 0;
+const MIN_JITTER_SECONDS = 0;
+const MAX_JITTER_SECONDS = 30;
 
 // 官方状态检查默认间隔(5 分钟)
 const DEFAULT_OFFICIAL_STATUS_INTERVAL_SECONDS = 300;
@@ -30,6 +33,24 @@ function parseOfficialStatusIntervalSeconds() {
   return DEFAULT_OFFICIAL_STATUS_INTERVAL_SECONDS;
 }
 
+function parsePollingJitterSeconds() {
+  const raw = process.env.CHECK_POLL_JITTER_SECONDS;
+  const parsed = Number(raw);
+  if (Number.isFinite(parsed) && parsed >= 0) {
+    return parsed;
+  }
+  return DEFAULT_JITTER_SECONDS;
+}
+
+function parseOfficialStatusJitterSeconds() {
+  const raw = process.env.OFFICIAL_STATUS_CHECK_JITTER_SECONDS;
+  const parsed = Number(raw);
+  if (Number.isFinite(parsed) && parsed >= 0) {
+    return parsed;
+  }
+  return DEFAULT_JITTER_SECONDS;
+}
+
 export function getPollingIntervalSeconds() {
   const seconds = parseIntervalSeconds();
   return Math.max(MIN_INTERVAL_SECONDS, Math.min(MAX_INTERVAL_SECONDS, seconds));
@@ -37,6 +58,15 @@ export function getPollingIntervalSeconds() {
 
 export function getPollingIntervalMs() {
   return getPollingIntervalSeconds() * 1000;
+}
+
+export function getPollingJitterSeconds() {
+  const seconds = parsePollingJitterSeconds();
+  return Math.max(MIN_JITTER_SECONDS, Math.min(MAX_JITTER_SECONDS, seconds));
+}
+
+export function getPollingJitterMs() {
+  return getPollingJitterSeconds() * 1000;
 }
 
 export function getPollingIntervalLabel() {
@@ -64,6 +94,15 @@ export function getOfficialStatusIntervalSeconds() {
  */
 export function getOfficialStatusIntervalMs() {
   return getOfficialStatusIntervalSeconds() * 1000;
+}
+
+export function getOfficialStatusJitterSeconds() {
+  const seconds = parseOfficialStatusJitterSeconds();
+  return Math.max(MIN_JITTER_SECONDS, Math.min(MAX_JITTER_SECONDS, seconds));
+}
+
+export function getOfficialStatusJitterMs() {
+  return getOfficialStatusJitterSeconds() * 1000;
 }
 
 /**
