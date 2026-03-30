@@ -69,7 +69,10 @@ function isGoogleGenerativeEndpoint(endpoint: string | null | undefined): boolea
  * // => "https://generativelanguage.googleapis.com/v1beta"
  */
 function extractGoogleBaseURL(endpoint: string): string {
-  const match = endpoint.match(/^(https:\/\/generativelanguage\.googleapis\.com\/v\d+\w*)/);
+  const [pathWithoutQuery] = endpoint.split("?");
+  const match = pathWithoutQuery.match(
+    /^(https:\/\/[^/]+\/v\d+\w*)\/models\/[^/:]+:(generateContent|streamGenerateContent)\/?$/
+  );
   return match?.[1] || endpoint;
 }
 
